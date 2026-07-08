@@ -19,10 +19,13 @@
 #                          NOT provably working does the log's last line decide:
 #                          non-terminal (no verb) surfaces at once; terminal
 #                          (captain-relevant) surfaces at once UNLESS that exact
-#                          status line was already surfaced to firstmate
-#                          (.hb-surfaced marker), in which case a finished crew
-#                          idling at an already-reported state is absorbed instead
-#                          of re-tripping on every pane redraw. When the wedge
+#                          status line is FINISHED-shaped (done:/PR ready/checks
+#                          green/ready in branch/merged - never needs-decision:
+#                          or blocked:, which describe a crew expected to resume)
+#                          AND was already surfaced to firstmate (.hb-surfaced
+#                          marker), in which case a finished crew idling at an
+#                          already-reported state is absorbed instead of
+#                          re-tripping on every pane redraw. When the wedge
 #                          timer expires, the crew state is RE-READ: a crew still
 #                          provably working is absorbed again and the timer
 #                          resets (a long validation never wedge-escalates while
@@ -374,21 +377,27 @@ mark_surfaced() {  # <status-file>
   printf '%s' "$last" > "$(_hb_surfaced_path "$task")"
 }
 
-# 0 if <task>'s current captain-relevant last status line has ALREADY been
-# surfaced to firstmate (its content matches the .hb-surfaced-<task> marker).
-# The stale path uses this to stop a finished crew from re-tripping stale on
-# every pane redraw (the fmfix-traps nuisance-wake class (b)): a crew idling at
-# a terminal state (done/checks-green awaiting the merge decision) keeps
-# producing NEW stale hashes as its pane redraws (e.g. no-mistakes' ci monitor
-# printing "still monitoring" ticks), and each new hash would re-surface the
-# same already-reported status. The marker is advanced ONLY when a wake
+# 0 if <task>'s current last status line is FINISHED-shaped (status_is_finished)
+# and has ALREADY been surfaced to firstmate (its content matches the
+# .hb-surfaced-<task> marker). The stale path uses this to stop a finished crew
+# from re-tripping stale on every pane redraw (the fmfix-traps nuisance-wake
+# class (b)): a crew idling at a finished state (done/checks-green awaiting the
+# merge decision) keeps producing NEW stale hashes as its pane redraws (e.g.
+# no-mistakes' ci monitor printing "still monitoring" ticks), and each new hash
+# would re-surface the same already-reported status. The dedup is restricted to
+# finished verbs on purpose: a surfaced needs-decision:/blocked: line describes
+# a crew expected to RESUME once firstmate answers, so a crew that hard-stops
+# at one of those must keep surfacing per distinct stale hash, never be
+# absorbed into permanent invisibility. The marker is advanced ONLY when a wake
 # actually reached firstmate, so this never suppresses a status firstmate has
-# not seen, and any NEW status line (content differing from the marker) still
-# surfaces normally.
+# not seen; any NEW status line (content differing from the marker) still
+# surfaces normally, and fm-send clears the marker on a text steer so a
+# re-steered crew that later hard-stops surfaces again.
 status_already_surfaced() {  # <task>
   local task=$1 last
   last=$(last_status_line "$STATE/$task.status")
   [ -n "$last" ] || return 1
+  status_is_finished "$last" || return 1
   [ "$(cat "$(_hb_surfaced_path "$task")" 2>/dev/null || true)" = "$last" ]
 }
 
@@ -570,12 +579,13 @@ EOF
               date +%s > "$ssf"
               triage_log "absorbed stale (provably working, overriding a stale captain-relevant status): $w"
             elif status_already_surfaced "$(window_to_task "$w" "$STATE")"; then
-              # A finished crew idling at a terminal state firstmate already
-              # knows about (its captain-relevant status was surfaced and
-              # marked): every pane redraw makes a NEW stale hash, and without
-              # this dedup each one re-surfaced the same done/checks-green
-              # state (nuisance-wake class (b)). Absorb; a NEW status line no
-              # longer matching the surfaced marker still surfaces below.
+              # A finished crew idling at a FINISHED-shaped state firstmate
+              # already knows about (its status was surfaced and marked):
+              # every pane redraw makes a NEW stale hash, and without this
+              # dedup each one re-surfaced the same done/checks-green state
+              # (nuisance-wake class (b)). Absorb; a NEW status line no longer
+              # matching the surfaced marker, or a resumable verb
+              # (needs-decision:/blocked:), still surfaces below.
               printf '%s' "$h" > "$sf"
               rm -f "$ssf"
               triage_log "absorbed terminal stale (status already surfaced): $w"

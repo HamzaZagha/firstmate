@@ -27,6 +27,11 @@
 # or a status-pointed doc instead of stranding it in chat the main firstmate
 # never reads. A crewmate/scout target, an explicit backend-target escape-hatch
 # target, and the --key path are never marked - their behavior is unchanged.
+# A submitted text steer to a task selector resolved through this home's meta
+# also clears the task's state/.hb-surfaced-<task> marker, so the watcher's
+# finished-status stale dedup (bin/fm-watch.sh) never absorbs a steered crew
+# that later hard-stops; explicit backend targets and the --key path leave the
+# marker untouched.
 # After a successful text submit fm-send pauses FM_SEND_SETTLE seconds (default 1,
 # 0 disables) before returning: submit confirmation only proves the text was
 # accepted, but the harness needs a beat to spin up the turn before its busy
@@ -236,6 +241,17 @@ else
       exit 1
       ;;
   esac
+  # Submit landed: this steer supersedes whatever surfaced status the crew was
+  # idling at, so clear the watcher's .hb-surfaced-<task> marker. Without this,
+  # a steered crew whose last status line still matches the marker (e.g. a
+  # done: crew sent follow-up work) would be absorbed by the finished-status
+  # stale dedup if it later hard-stopped without writing a new status. Scoped
+  # to task selectors resolved through this home's meta; an explicit
+  # backend-target escape hatch has no task to clear.
+  if [ -n "$TARGET_SELECTOR" ] && [ -n "$TARGET_META" ]; then
+    task_id=$(fm_send_id_from_meta "$TARGET_META")
+    rm -f "$STATE/.hb-surfaced-$(printf '%s' "$task_id" | tr ':/.' '___')"
+  fi
   # Submit landed (verdict was not pending/send-failed). Confirmation only proves
   # the text was accepted; the harness still needs a beat to spin up the
   # turn before its busy footer shows. Pause so an immediate peek catches the

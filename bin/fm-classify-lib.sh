@@ -53,6 +53,22 @@ status_is_captain_relevant() {
   printf '%s' "$line" | grep -qiE "${FM_CAPTAIN_RE:-$FM_CLASSIFY_CAPTAIN_RE_DEFAULT}"
 }
 
+# Finished-shaped captain-relevant verbs: a crew idling at one of these has
+# completed its work and is awaiting firstmate/captain action (a merge, a
+# review), so a re-sighted stale at the SAME already-surfaced line is safe to
+# absorb. Deliberately a strict subset of the captain-relevant set:
+# needs-decision:, blocked:, and failed: are excluded because they describe a
+# crew expected to resume or be recovered, so a stale at those verbs must keep
+# surfacing. FM_FINISHED_RE overrides the set, mirroring FM_CAPTAIN_RE.
+FM_CLASSIFY_FINISHED_RE_DEFAULT='done:|PR ready|checks green|ready in branch|merged'
+
+# 0 if the given (last) status line matches a finished-shaped verb.
+status_is_finished() {
+  local line=$1
+  [ -n "$line" ] || return 1
+  printf '%s' "$line" | grep -qiE "${FM_FINISHED_RE:-$FM_CLASSIFY_FINISHED_RE_DEFAULT}"
+}
+
 # task id from a recorded window target, falling back to the tmux-shaped
 # "<session>:fm-<id>" form when no metadata state is available.
 window_to_task() {

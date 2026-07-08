@@ -9,10 +9,11 @@
 # advanced, beacon fresh), stopped-crew no-verb wakes surfaced (queue + exit),
 # provably-working stale panes absorbed with a wedge timer whose expiry
 # re-check keeps absorbing while the crew still works and escalates once it
-# stops, already-surfaced terminal stales deduped across pane redraws,
-# terminal-looking stale status lines overridden by an active run, the heartbeat
-# backstop fail-safe, and afk coherence (no double-triage while the away-mode
-# daemon owns supervision).
+# stops, already-surfaced FINISHED stales deduped across pane redraws (while a
+# surfaced resumable needs-decision:/blocked: crew that goes stale keeps
+# surfacing), terminal-looking stale status lines overridden by an active run,
+# the heartbeat backstop fail-safe, and afk coherence (no double-triage while
+# the away-mode daemon owns supervision).
 #
 # Daemon-side classification/injection lives in fm-daemon.test.sh; watcher/lock
 # liveness in fm-watcher-lock.test.sh; the durable-queue safety matrix in
@@ -136,6 +137,25 @@ test_classifier_primitives() {
   FM_CAPTAIN_RE='custom-verb:' status_is_captain_relevant "custom-verb: x" || fail "FM_CAPTAIN_RE override not honored"
   FM_CAPTAIN_RE='custom-verb:' status_is_captain_relevant "done: x" && fail "FM_CAPTAIN_RE override did not replace the default verb set"
   pass "classifier primitives: last line, captain-relevance, window->task, FM_CAPTAIN_RE override"
+}
+
+# status_is_finished: the strict finished-shaped subset the already-surfaced
+# stale dedup keys on. Resumable verbs (needs-decision:/blocked:) and failed:
+# must NOT match, so a crew awaiting an answer that hard-stops keeps surfacing.
+test_status_is_finished_classifier() {
+  status_is_finished "done: PR https://x/y/pull/1" || fail "done: not recognized as finished"
+  status_is_finished "done: PR https://x/y/pull/1 checks green" || fail "checks green not recognized as finished"
+  status_is_finished "PR ready for review" || fail "PR ready not recognized as finished"
+  status_is_finished "done: ready in branch fm/x" || fail "ready in branch not recognized as finished"
+  status_is_finished "merged into main" || fail "merged not recognized as finished"
+  status_is_finished "needs-decision: pick A or B" && fail "needs-decision: wrongly classified finished"
+  status_is_finished "blocked: waiting on credentials" && fail "blocked: wrongly classified finished"
+  status_is_finished "failed: tests red" && fail "failed: wrongly classified finished"
+  status_is_finished "working: compiling" && fail "working: wrongly classified finished"
+  status_is_finished "" && fail "empty line wrongly classified finished"
+  FM_FINISHED_RE='shipped:' status_is_finished "shipped: v2" || fail "FM_FINISHED_RE override not honored"
+  FM_FINISHED_RE='shipped:' status_is_finished "done: x" && fail "FM_FINISHED_RE override did not replace the default set"
+  pass "status_is_finished: only finished verbs match; resumable/failed verbs and overrides behave"
 }
 
 # crew_is_provably_working: the absorb-only-when-provably-working predicate. It is
@@ -320,14 +340,15 @@ test_terminal_stale_surfaced() {
   pass "a stale pane sitting on a terminal status is surfaced (queue + exit)"
 }
 
-# --- terminal stale already surfaced: absorbed, never re-trips ----------------
+# --- finished stale already surfaced: absorbed, never re-trips ----------------
 # The fmfix-traps nuisance-wake class (b): a crew that finished (done/checks
 # green, PR awaiting the merge decision) idles while its pane keeps redrawing
 # (e.g. no-mistakes' ci monitor printing "still monitoring" ticks). Every
 # redraw makes a NEW stale hash, and each new hash used to re-surface the same
-# already-reported status. Once the captain-relevant status has been surfaced
+# already-reported status. Once a FINISHED-shaped status has been surfaced
 # (the .hb-surfaced-* marker matches), later stale sightings absorb; a NEW
-# status line no longer matching the marker still surfaces.
+# status line no longer matching the marker still surfaces, and a resumable
+# needs-decision:/blocked: line is never deduped (see the next test).
 
 test_terminal_stale_already_surfaced_absorbed() {
   local dir state fakebin out drain_out capture_file window key pane_hash sig pid
@@ -390,6 +411,51 @@ test_terminal_stale_already_surfaced_absorbed() {
     || fail "the newly surfaced status was not recorded in the surfaced marker"
   unset FM_FAKE_CREW_STATE
   pass "an already-surfaced terminal stale absorbs across pane redraws; a new captain-relevant status still surfaces"
+}
+
+# --- resumable-verb stale: NEVER deduped by the surfaced marker ----------------
+# The dedup above is restricted to finished-shaped statuses on purpose. A crew
+# whose surfaced last status is needs-decision:/blocked: is expected to RESUME
+# once firstmate answers; if it instead hard-stops without writing a new status
+# (frozen pane, no busy footer, no running pipeline - the classic wedge), the
+# marker-matching absorb would make it permanently invisible until a session
+# restart. Each new stale hash at a resumable verb must therefore keep
+# surfacing, exactly as before the dedup existed.
+
+test_resumable_verb_stale_surfaces_despite_surfaced_marker() {
+  local verb line dir state fakebin out drain_out capture_file window key pane_hash sig pid
+  for verb in needs-decision blocked; do
+    case "$verb" in
+      needs-decision) line='needs-decision: pick A or B' ;;
+      blocked)        line='blocked: waiting on credentials' ;;
+    esac
+    dir=$(make_case "resumable-stale-$verb"); state="$dir/state"; fakebin="$dir/fakebin"
+    out="$dir/watch.out"; drain_out="$dir/drain.out"; capture_file="$dir/pane.txt"
+    window="test:fm-resume"
+    printf 'frozen pane, no footer' > "$capture_file"
+    printf 'window=%s\nkind=ship\n' "$window" > "$state/resume.meta"
+    printf '%s\n' "$line" > "$state/resume.status"
+    sig=$(seen_sig "$state/resume.status"); printf '%s' "$sig" > "$state/.seen-resume_status"
+    # The resumable status ALREADY woke firstmate once (marker matches the last
+    # line) - the exact precondition under which a finished verb would absorb.
+    printf '%s' "$line" > "$state/.hb-surfaced-resume"
+    key=$(printf '%s' "$window" | tr ':/.' '___')
+    pane_hash=$(hash_text "frozen pane, no footer")
+    printf '%s' "$pane_hash" > "$state/.hash-$key"
+    printf '1\n' > "$state/.count-$key"
+    # The crew hard-stopped: no running pipeline, no busy pane.
+    export FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available'
+    PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+      FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_POLL=1 FM_SIGNAL_GRACE=1 \
+      FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+    pid=$!
+    wait_for_exit "$pid" 40 || fail "a surfaced $verb: crew that went stale was not re-surfaced (deduped into invisibility)"
+    grep -Fx "stale: $window" "$out" >/dev/null || fail "the $verb: stale wake was not printed"
+    FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the $verb: stale failed"
+    grep "$(printf '\tstale\t')" "$drain_out" | grep -F "$window" >/dev/null || fail "the $verb: stale wake was not queued"
+    unset FM_FAKE_CREW_STATE
+  done
+  pass "a surfaced needs-decision:/blocked: crew that goes stale still surfaces (finished-only dedup)"
 }
 
 # --- stale pane, STALE terminal status overridden by an active run: absorbed ---
@@ -865,6 +931,7 @@ test_signal_reason_is_actionable_classifier
 test_stale_is_terminal_classifier
 test_scan_captain_relevant_statuses_classifier
 test_classifier_primitives
+test_status_is_finished_classifier
 test_crew_is_provably_working_classifier
 test_signal_crew_provably_working_classifier
 test_provably_working_signal_absorbed
@@ -874,6 +941,7 @@ test_working_note_not_working_surfaced
 test_actionable_signal_surfaced
 test_terminal_stale_surfaced
 test_terminal_stale_already_surfaced_absorbed
+test_resumable_verb_stale_surfaces_despite_surfaced_marker
 test_stale_terminal_status_overridden_by_active_run
 test_nonterminal_stale_provably_working_absorbed_then_escalated
 test_wedge_escalation_marks_demand_deep_inspection_after_threshold
