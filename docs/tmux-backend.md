@@ -113,6 +113,26 @@ The classifier deliberately reports `unknown` for `node`/`python`/`python3` rath
 Practical effect: a dead `pi` secondmate is not auto-healed by the liveness sweep today; it is reported as `skipped: liveness probe inconclusive` instead, which still surfaces it for a human to act on.
 Resolving this would need either a `pi`-specific env marker inspectable from outside the process (mirroring `PI_CODING_AGENT=1`, which `bin/fm-harness.sh` already uses for self-detection but which is not readable from a different process without deeper introspection) or accepting the argument-inspection fragility - not attempted here.
 
+## Incident (2026-07-09): claude's NBSP-padded prompt row false-failed every submit verification
+
+Symptom (data/learnings.md 2026-07-06 retro): `fm-send.sh` to a claude crew printed `error: text not submitted ... (Enter swallowed; text left in composer)` on nearly every `/no-mistakes` send, even though the command had landed and the run started - forcing a confirm-peek after every steer.
+
+Root cause, reproduced live against real claude 2.1.204 under tmux 3.6b (2026-07-09, launched exactly as `fm-spawn` does: `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --dangerously-skip-permissions`): claude 2.x renders its unbordered composer prompt row as `❯` followed by U+00A0 (a no-break space), not an ASCII space.
+Byte dump of the cursor row via `tmux capture-pane -e -p -t <pane> -S <cursor_y> -E <cursor_y> | od -c`, idle after a submit:
+
+```
+033 [ 3 8 ; 5 ; 2 4 6 m 342 235 257 302 240 033 [ 3 9 m
+```
+
+`342 235 257` is `❯` and `302 240` is U+00A0.
+`fm_tmux_composer_state`'s `[![:space:]]` trim never strips U+00A0, so the leftover `❯` + NBSP matched neither the empty check nor the bare-prompt-glyph case and classified `pending` - on the idle composer, on the popup-open typed row, and on the running-turn row alike.
+The submit verification therefore read `pending` after every genuine submit, exhausted its Enter retries, and reported the false swallow; probe timeline: idle `pending`, typed `/no-mistakes` `pending`, every 0.4s sample for 4.8s after the submitting Enter `pending`, while the pane transcript showed the command's turn running.
+
+Fix: `fm_tmux_composer_state` normalizes U+00A0 to a plain space after border stripping and before trimming (`bin/fm-tmux-lib.sh`), and `fm_backend_herdr_composer_state` applies the same normalization to its ANSI-stripped rows (`bin/backends/herdr.sh`), since a claude crew under herdr renders the same bytes.
+Verified against the same live pane after the fix: idle `empty`, typed slash with the popup open `pending`, 0.4s after the submitting Enter `empty`.
+A genuinely-unsubmitted composer (real text on the row) still reads `pending`, so the Enter retry and the real failure path are unchanged.
+Regression coverage: `tests/fm-send-claude-slash.test.sh`.
+
 ## Limitations
 
 None specific to tmux for the reference path itself - it is the fully verified reference backend, while Orca and cmux are the backends without secondmate support.

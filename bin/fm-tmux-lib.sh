@@ -128,7 +128,13 @@ fm_tmux_composer_state() {  # <target> -> empty|pending|unknown
   stripped=${line//│/}      # U+2502 light vertical (claude)
   stripped=${stripped//┃/}  # U+2503 heavy vertical
   stripped=${stripped//|/}  # ASCII pipe
-  # Trim surrounding whitespace.
+  # Normalize U+00A0 no-break spaces to plain spaces BEFORE trimming. claude's
+  # unbordered composer (verified live claude 2.x, 2026-07-09) pads its prompt
+  # row as "❯" + NBSP, and [:space:] trimming never strips NBSP, so the
+  # glyph-only idle row read as pending forever - every claude submit
+  # verification false-errored "Enter swallowed" even though the text landed
+  # (the fm-send slash-command incident; see docs/tmux-backend.md).
+  stripped=${stripped//$'\302\240'/ }  # U+00A0 no-break space
   stripped="${stripped#"${stripped%%[![:space:]]*}"}"
   stripped="${stripped%"${stripped##*[![:space:]]}"}"
   # Nothing left inside the box = empty composer.

@@ -102,6 +102,7 @@ The CLI's `--prompt-suggestions` flag is print/SDK-mode only and does not suppre
 As defense in depth for any pane that flag cannot reach, including the captain's own firstmate composer that away-mode reads, the pane reader in `bin/fm-tmux-lib.sh` captures only the composer line with ANSI styling, drops dim/faint SGR 2 runs, and ignores them, so only normal-intensity typed text counts as pending input.
 That styled capture is internal to the boolean detector only.
 `fm-peek` and every other human or LLM-facing capture path stays plain `tmux capture-pane` with no escape codes.
+Claude 2.x also pads its unbordered `❯` prompt row with U+00A0 no-break spaces, which the composer reader normalizes before classifying; before that fix every claude submit verification false-errored "Enter swallowed" even when the text landed (see `docs/tmux-backend.md` "Incident (2026-07-09)").
 
 **Primary-session guard fact (verified 2026-07-04, Claude Code 2.1.201; preserved 2026-07-08, Claude Code 2.1.204).**
 This is separate from the per-task crewmate turn-end hook above (that one just `touch`es a marker file in a task's own `.claude/settings.local.json`).

@@ -712,6 +712,11 @@ fm_backend_herdr_composer_state() {  # <target> -> empty|pending|unknown
   while IFS= read -r line; do
     raw_line=$line
     line=$(fm_backend_herdr_strip_ansi "$line")
+    # Normalize U+00A0 no-break spaces to plain spaces before trimming: claude
+    # 2.x pads its bare "❯" prompt row with NBSP, which [:space:] trimming
+    # never strips, so a glyph-only idle row would read as pending (the same
+    # hazard fm_tmux_composer_state fixes; see bin/fm-tmux-lib.sh).
+    line=${line//$'\302\240'/ }
     trimmed="${line#"${line%%[![:space:]]*}"}"
     trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
     [ -n "$trimmed" ] || continue

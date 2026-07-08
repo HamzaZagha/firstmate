@@ -17,9 +17,10 @@
 # and its signal-path wrapper). It is NOT a pure status-file read: it reuses
 # bin/fm-crew-state.sh, which may make a bounded no-mistakes call, to decide
 # whether a crew that just stopped its turn or went stale shows positive evidence
-# it is still working. Callers run it ONLY on no-verb signal handling and first
-# sighting of a stale hash, never on every wake, so the per-wake triage stays
-# cheap.
+# it is still working. Callers run it ONLY on no-verb signal handling, first
+# sighting of a stale hash, and wedge-timer expiry (bounded to once per
+# FM_STALE_ESCALATE_SECS per stale pane), never on every wake, so the per-wake
+# triage stays cheap.
 
 # Directory of this library, used to locate the sibling fm-crew-state.sh reader.
 # Resolved at source time from BASH_SOURCE so it works whether sourced by a
@@ -108,8 +109,8 @@ signal_reason_is_actionable() {  # <file> ...
 # stale "working:" status-log line (source status-log), a torn-down or unknown
 # crew, or an unreadable verdict - is NOT provably working, so the wake surfaces.
 # NOT a pure read: fm-crew-state.sh may make a bounded no-mistakes call, so this
-# runs only on no-verb signal and first-sighting stale paths. FM_CREW_STATE_BIN
-# lets tests stub the verdict.
+# runs only on no-verb signal, first-sighting stale, and wedge-expiry re-check
+# paths. FM_CREW_STATE_BIN lets tests stub the verdict.
 crew_is_provably_working() {  # <id>
   local id=$1 line state src
   [ -n "$id" ] || return 1

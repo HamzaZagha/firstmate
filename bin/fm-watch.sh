@@ -17,9 +17,17 @@
 #                          line, since the crew's own log gets no new entry once
 #                          firstmate hands it to a no-mistakes validation. Only when
 #                          NOT provably working does the log's last line decide:
-#                          terminal (captain-relevant) or non-terminal (no verb),
-#                          both surfaced at once. A provably-working stale past the
-#                          wedge threshold also surfaces, with an "escalation N"
+#                          non-terminal (no verb) surfaces at once; terminal
+#                          (captain-relevant) surfaces at once UNLESS that exact
+#                          status line was already surfaced to firstmate
+#                          (.hb-surfaced marker), in which case a finished crew
+#                          idling at an already-reported state is absorbed instead
+#                          of re-tripping on every pane redraw. When the wedge
+#                          timer expires, the crew state is RE-READ: a crew still
+#                          provably working is absorbed again and the timer
+#                          resets (a long validation never wedge-escalates while
+#                          its run is actively running), while a crew the
+#                          re-check finds stopped surfaces with an "escalation N"
 #                          count in the reason; at FM_WEDGE_DEMAND_INSPECT_COUNT
 #                          consecutive escalations on the SAME pane, the reason
 #                          also carries a "demand-deep-inspection" marker so the
@@ -130,13 +138,14 @@ BUSY_REGEX=${FM_BUSY_REGEX:-'esc (to )?interrupt|Working\.\.\.|Ctrl\+c:cancel'}
 # busy pane is SURFACED, so a finish reported only through interactive pane menus
 # (no done: status) is never swallowed. An ACTIONABLE wake (a captain-relevant
 # signal, a no-verb signal whose crew is not provably working, any check, a stale
-# pane whose crew is not provably working, a provably-working stale past the
-# threshold, or anything unknown) is written to the durable queue and exits, which
+# pane whose crew is not provably working and whose status was not already
+# surfaced, a stale whose wedge-expiry re-check finds the crew stopped, or
+# anything unknown) is written to the durable queue and exits, which
 # is what wakes the LLM through the background-task completion. The same classifier
 # (fm-classify-lib.sh) backs the away-mode daemon; while state/.afk exists the
 # daemon owns triage, so this watcher reverts to one-shot (enqueue + exit on every
 # wake) and never double-triages - and never runs the costly provably-working read.
-STALE_ESCALATE_SECS=${FM_STALE_ESCALATE_SECS:-240}  # idle secs before a provably-working stale escalates as a possible wedge
+STALE_ESCALATE_SECS=${FM_STALE_ESCALATE_SECS:-240}  # idle secs between wedge re-checks of an absorbed provably-working stale; escalates only if a re-check finds the crew stopped
 TRIAGE_LOG="$STATE/.watch-triage.log"
 TRIAGE_LOG_MAX_BYTES=${FM_WATCH_TRIAGE_LOG_MAX_BYTES:-262144}
 
@@ -256,12 +265,20 @@ FM_WEDGE_DEMAND_INSPECT_COUNT=${FM_WEDGE_DEMAND_INSPECT_COUNT:-3}
 
 # Repeat-poll wedge-timer bookkeeping for an already-classified stale hash
 # absorbed as provably-working - repairs a missing/corrupt timer (self-heals a
-# watcher restart between recording the hash and recording the timer), or
-# escalates once STALE_ESCALATE_SECS have elapsed. Never re-reads the crew
-# state (the costly check already ran once, at classification time). Shared by
-# both places a hash can be absorbed this way: the plain non-terminal path,
-# and the stale_is_terminal-overridden path (a captain-relevant status-log
-# line that an active run/busy pane outranked).
+# watcher restart between recording the hash and recording the timer), or,
+# once STALE_ESCALATE_SECS have elapsed, RE-READS the crew state before
+# deciding. A crew whose re-check still shows positive working evidence (an
+# actively-running no-mistakes step, or a busy pane) is absorbed again and the
+# timer resets: a long validation legitimately sits on a quiet pane for its
+# entire multi-minute run, and waking firstmate just so it can run the same
+# authoritative read and re-arm was the fmfix-traps nuisance-wake class (a).
+# Only a crew the re-check finds NOT provably working escalates - it stopped
+# (or its run hung until no-mistakes' own lifecycle flipped it) during the
+# absorbed window, exactly what the wedge wake exists to catch. The re-read is
+# bounded to once per STALE_ESCALATE_SECS per stale pane, never every poll.
+# Shared by both places a hash can be absorbed this way: the plain
+# non-terminal path, and the stale_is_terminal-overridden path (a
+# captain-relevant status-log line that an active run/busy pane outranked).
 wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-file>
   local win=$1 since_file=$2 label=$3 escalation_file=$4 since age n reason
   since=$(cat "$since_file" 2>/dev/null || true)
@@ -273,6 +290,11 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
     *)
       age=$(( $(date +%s) - since ))
       if [ "$age" -ge "$STALE_ESCALATE_SECS" ]; then
+        if crew_is_provably_working "$(window_to_task "$win" "$STATE")"; then
+          date +%s > "$since_file"
+          triage_log "absorbed $label wedge re-check (still provably working): $win"
+          return 0
+        fi
         n=$(( $(cat "$escalation_file" 2>/dev/null || echo 0) + 1 ))
         echo "$n" > "$escalation_file"
         reason="stale: $win (idle ${age}s, possible wedge, escalation $n)"
@@ -350,6 +372,24 @@ mark_surfaced() {  # <status-file>
   [ -n "$last" ] || return 0
   status_is_captain_relevant "$last" || return 0
   printf '%s' "$last" > "$(_hb_surfaced_path "$task")"
+}
+
+# 0 if <task>'s current captain-relevant last status line has ALREADY been
+# surfaced to firstmate (its content matches the .hb-surfaced-<task> marker).
+# The stale path uses this to stop a finished crew from re-tripping stale on
+# every pane redraw (the fmfix-traps nuisance-wake class (b)): a crew idling at
+# a terminal state (done/checks-green awaiting the merge decision) keeps
+# producing NEW stale hashes as its pane redraws (e.g. no-mistakes' ci monitor
+# printing "still monitoring" ticks), and each new hash would re-surface the
+# same already-reported status. The marker is advanced ONLY when a wake
+# actually reached firstmate, so this never suppresses a status firstmate has
+# not seen, and any NEW status line (content differing from the marker) still
+# surfaces normally.
+status_already_surfaced() {  # <task>
+  local task=$1 last
+  last=$(last_status_line "$STATE/$task.status")
+  [ -n "$last" ] || return 1
+  [ "$(cat "$(_hb_surfaced_path "$task")" 2>/dev/null || true)" = "$last" ]
 }
 
 # Mark every current captain-relevant status as surfaced. Called after the
@@ -529,6 +569,16 @@ EOF
               printf '%s' "$h" > "$sf"
               date +%s > "$ssf"
               triage_log "absorbed stale (provably working, overriding a stale captain-relevant status): $w"
+            elif status_already_surfaced "$(window_to_task "$w" "$STATE")"; then
+              # A finished crew idling at a terminal state firstmate already
+              # knows about (its captain-relevant status was surfaced and
+              # marked): every pane redraw makes a NEW stale hash, and without
+              # this dedup each one re-surfaced the same done/checks-green
+              # state (nuisance-wake class (b)). Absorb; a NEW status line no
+              # longer matching the surfaced marker still surfaces below.
+              printf '%s' "$h" > "$sf"
+              rm -f "$ssf"
+              triage_log "absorbed terminal stale (status already surfaced): $w"
             else
               fm_wake_append stale "$w" "stale: $w" || exit 1
               printf '%s' "$h" > "$sf"
