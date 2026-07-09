@@ -19,6 +19,10 @@ function runGuard(): Promise<{ code: number; stderr: string }> {
     });
     child.on("error", () => resolveResult({ code: 0, stderr: "" }));
     child.on("close", (code) => resolveResult({ code: code ?? 0, stderr }));
+    // A child that exits before reading stdin EPIPEs this write; without a
+    // handler that is an unhandled 'error' event that crashes the extension
+    // host, defeating the fail-open contract of the process-level handler.
+    child.stdin.on("error", () => {});
     child.stdin.end('{"stop_hook_active":false}');
   });
 }

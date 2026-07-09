@@ -72,6 +72,41 @@ fm_test_tmproot() {
 # fm_fakebin <dir> creates <dir>/fakebin and echoes it; prepend it to PATH to
 # shadow real tools with stubs. fm_fake_exit0 drops trivial exit-0 stubs for the
 # named tools into a fakebin dir.
+#
+# fm_test_hermetic_base_path builds a one-directory base PATH and sets
+# FM_TEST_HERMETIC_BASE_PATH to it: a symlink farm of every executable in the
+# standard system dirs MINUS the firstmate toolchain names fm-bootstrap.sh
+# probes with `command -v` (the union of its TOOLS lists). Suites that assert
+# a "MISSING: <tool>" diagnostic previously used the raw system dirs as the
+# base PATH and relied on the host not having the tool installed - false on
+# hosts with e.g. /usr/bin/node or /usr/bin/orca (the GNOME screen reader
+# ships one). The farm makes absence deterministic: a probed tool is present
+# iff the test's fakebin provides it. Built once per test process and reused.
+# It sets a global rather than echoing, and must be called directly (never in
+# a $(...) substitution): fm_test_tmproot's cleanup trap fires when a
+# substitution subshell exits, which would delete the farm it just built.
+
+FM_TEST_HERMETIC_BASE_PATH=""
+
+fm_test_hermetic_base_path() {
+  if [ -z "$FM_TEST_HERMETIC_BASE_PATH" ]; then
+    local farm dir name
+    farm=$(mktemp -d "${TMPDIR:-/tmp}/fm-hermetic-bin.XXXXXX")
+    if [ "${#FM_TEST_CLEANUP_DIRS[@]}" -eq 0 ]; then
+      trap fm_test_cleanup EXIT
+    fi
+    FM_TEST_CLEANUP_DIRS+=("$farm")
+    for dir in /usr/bin /bin /usr/sbin /sbin; do
+      [ -d "$dir" ] || continue
+      cp -sn "$dir"/* "$farm"/ 2>/dev/null || true
+    done
+    for name in tmux node gh treehouse no-mistakes gh-axi chrome-devtools-axi \
+      lavish-axi tasks-axi quota-axi orca; do
+      rm -f "$farm/$name"
+    done
+    FM_TEST_HERMETIC_BASE_PATH=$farm
+  fi
+}
 
 fm_fakebin() {
   local dir=$1 fakebin="$1/fakebin"
