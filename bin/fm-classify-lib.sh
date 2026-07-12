@@ -17,9 +17,10 @@
 # working/paused wrappers). It is NOT a pure status-file read: it reuses
 # bin/fm-crew-state.sh, which may make a bounded no-mistakes call, to decide
 # whether a crew that just stopped its turn or went stale is working, deliberately
-# paused, or neither. Callers run it ONLY on no-verb signal handling and first
-# sighting of a stale hash, never on every wake, so the per-wake triage stays
-# cheap.
+# paused, or neither. Callers run it ONLY on no-verb signal handling, first
+# sighting of a stale hash, and wedge-timer expiry (bounded to once per
+# FM_STALE_ESCALATE_SECS per stale pane), never on every wake, so the per-wake
+# triage stays cheap.
 
 # Directory of this library, used to locate the sibling fm-crew-state.sh reader.
 # Resolved at source time from BASH_SOURCE so it works whether sourced by a
@@ -83,6 +84,33 @@ status_is_captain_relevant() {
     esac
   fi
   printf '%s' "$line" | grep -qiE "${FM_CAPTAIN_RE:-$FM_CLASSIFY_CAPTAIN_RE_DEFAULT}"
+}
+
+# Finished-shaped captain-relevant statuses: a crew idling at one of these has
+# completed its work and is awaiting firstmate/captain action (a merge, a
+# review), so a re-sighted stale at the SAME already-surfaced line is safe to
+# absorb. Deliberately a strict subset of the captain-relevant set:
+# needs-decision:, blocked:, and failed: are excluded because they describe a
+# crew expected to resume or be recovered, so a stale at those verbs must keep
+# surfacing. FM_FINISHED_RE overrides the set, mirroring FM_CAPTAIN_RE.
+FM_CLASSIFY_FINISHED_RE_DEFAULT='done:|PR ready|checks green|ready in branch|merged'
+
+# 0 if the given (last) status line is finished-shaped. Anchored verb
+# classification first, mirroring status_is_captain_relevant: a resumable verb
+# (needs-decision/blocked/failed) is NEVER finished, even when its note happens
+# to mention a finished phrase ("blocked: PR ready but CI is red"), and a done
+# verb is finished without needing the phrase regex.
+status_is_finished() {
+  local line=$1 verb
+  [ -n "$line" ] || return 1
+  if [ -z "${FM_FINISHED_RE+x}" ]; then
+    verb=$(status_line_verb "$line")
+    case "$verb" in
+      done) return 0 ;;
+      needs-decision|blocked|failed) return 1 ;;
+    esac
+  fi
+  printf '%s' "$line" | grep -qiE "${FM_FINISHED_RE:-$FM_CLASSIFY_FINISHED_RE_DEFAULT}"
 }
 
 # 0 if a status line's leading verb is the pause verb (paused: <reason>). A pure

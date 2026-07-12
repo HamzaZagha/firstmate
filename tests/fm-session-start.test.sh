@@ -26,7 +26,10 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/wake-helpers.sh"
 
 SESSION_START="$ROOT/bin/fm-session-start.sh"
-BASE_PATH=${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}
+# Hermetic base PATH: MISSING-tool assertions must not depend on which
+# toolchain binaries the host happens to have in its system dirs (lib.sh).
+fm_test_hermetic_base_path
+BASE_PATH=${FM_TEST_BASE_PATH:-$FM_TEST_HERMETIC_BASE_PATH}
 TMP_ROOT=$(fm_test_tmproot fm-session-start-tests)
 fm_git_identity fmtest fmtest@example.invalid
 

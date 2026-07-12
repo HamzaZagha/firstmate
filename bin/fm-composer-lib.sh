@@ -182,6 +182,20 @@ fm_composer_idle_matches() {
 fm_composer_classify_content() {  # <bordered> <content> [idle_re] [idle_case] [plain_content]
   local bordered=$1 content=$2 idle_re=${3:-} idle_case=${4:-sensitive} plain_content
   plain_content=${5:-$content}
+  # Normalize U+00A0 no-break spaces to plain spaces, then re-trim: claude's
+  # unbordered composer (verified live claude 2.1.204 / tmux 3.6b, 2026-07-09)
+  # pads its idle prompt row as "❯" + NBSP, which the callers' [:space:]
+  # trimming never strips, so the glyph-only idle row read as pending forever
+  # and every claude submit verification false-errored "Enter swallowed" even
+  # though the text landed (docs/tmux-backend.md's fm-send incident). Owned
+  # here, in the ONE shared classifier, so all four adapters get the same
+  # normalization; a genuinely-unsubmitted composer still reads pending.
+  content=${content//$'\302\240'/ }
+  content="${content#"${content%%[![:space:]]*}"}"
+  content="${content%"${content##*[![:space:]]}"}"
+  plain_content=${plain_content//$'\302\240'/ }
+  plain_content="${plain_content#"${plain_content%%[![:space:]]*}"}"
+  plain_content="${plain_content%"${plain_content##*[![:space:]]}"}"
   if [ "$bordered" != 1 ] && [ -z "$content" ] && [ -n "$plain_content" ]; then
     case "$plain_content" in
       '❯'|'›') printf 'empty'; return 0 ;;

@@ -546,9 +546,10 @@ The emitted block is the only per-harness operating recipe in the session contex
 Do not substitute another harness's command shape for it.
 **Always-on wake triage (absorb only when provably working).**
 `bin/fm-watch.sh` classifies every wake in bash and absorbs the benign majority without waking you: crews with positive working evidence (an actively-running no-mistakes step for their branch, or a busy pane, read via `bin/fm-crew-state.sh`), a declared `paused:` external wait until its bounded recheck cadence, and no-change heartbeats.
-It never absorbs a crewmate that stopped without that evidence - whatever its stale status log claims - and only an actionable wake is queued durably and ends the supervision wait, so you resume the emitted protocol exactly once per actionable event.
+It never absorbs a crewmate that stopped without that evidence - whatever its stale status log claims - except one idling at the same finished-shaped status (`done:`-family, never `needs-decision:`/`blocked:`) that already woke you, which is deduped instead of re-tripping on every pane redraw; a text steer through `bin/fm-send.sh` clears that dedup so a steered crew that later hard-stops surfaces again.
+Only an actionable wake is queued durably and ends the supervision wait, so you resume the emitted protocol exactly once per actionable event.
 A `paused:` status is a deliberate external wait, not `blocked:`; its initial signal still surfaces once, and a forgotten pause re-surfaces for a recheck once per window.
-Repeated provably-working stale escalations on one unchanged pane eventually add `demand-deep-inspection` to the wake reason so it is not mistaken for another routine validation wait.
+A wedge-timer expiry re-checks the crew state and keeps absorbing while the crew still works; repeated stopped-crew escalations on one unchanged pane eventually add `demand-deep-inspection` to the wake reason so it is not mistaken for another routine validation wait.
 `docs/architecture.md` ("Event-driven supervision") owns the full classification mechanism, its thresholds, and the shared classifier library; while `state/.afk` exists the daemon owns triage and the watcher surfaces every wake to it.
 At the start of every wake-handling turn, run `bin/fm-wake-drain.sh` before peeking panes, reading status files beyond the reason line, or starting new work.
 Session-start recovery is the exception: `bin/fm-session-start.sh` already drained the queue when locked, or deliberately skipped the drain when read-only because another session owns it.

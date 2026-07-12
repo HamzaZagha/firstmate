@@ -125,6 +125,30 @@ test_real_text_is_pending() {
   pass "fm_composer_classify_content: real unsubmitted text reads pending (including a popup argument-hint fill)"
 }
 
+# --- NBSP normalization: claude's "❯" + U+00A0 idle row ----------------------
+# claude 2.x pads its unbordered prompt row with U+00A0 no-break spaces, which
+# [:space:] trimming never strips (verified live claude 2.1.204 / tmux 3.6b,
+# 2026-07-09, docs/tmux-backend.md's fm-send incident). Without normalization
+# the glyph-only idle row read pending forever and every claude submit
+# verification false-errored "Enter swallowed".
+
+test_nbsp_padded_rows_normalize() {
+  local nbsp out
+  nbsp=$'\302\240'
+  # Idle claude prompt: "❯" + NBSP reads empty, bare or bordered.
+  out=$(classify 0 "❯${nbsp}"); [ "$out" = empty ] || fail "bare '❯' + NBSP should read empty, got '$out'"
+  out=$(classify 1 "❯${nbsp}"); [ "$out" = empty ] || fail "bordered '❯' + NBSP should read empty, got '$out'"
+  # An NBSP-only remainder (the glyph itself ghost-stripped away): the plain
+  # row still identifies the agent prompt.
+  out=$(classify 0 "${nbsp}" '' sensitive "❯${nbsp}")
+  [ "$out" = empty ] || fail "NBSP-only content with a '❯' + NBSP plain row should read empty, got '$out'"
+  # A bare shell glyph padded with NBSP stays a dead shell (never empty).
+  out=$(classify 0 "\$${nbsp}"); [ "$out" = unknown ] || fail "bare '\$' + NBSP must stay unknown, got '$out'"
+  # Real typed text after the NBSP is still pending.
+  out=$(classify 0 "❯${nbsp}/no-mistakes"); [ "$out" = pending ] || fail "typed text after the NBSP prompt should read pending, got '$out'"
+  pass "fm_composer_classify_content: NBSP-padded rows normalize (idle empty, dead shell unknown, typed text pending)"
+}
+
 test_bare_shell_glyphs_are_unknown
 test_stripped_unbordered_content_uses_plain_content
 test_bare_shell_prompt_with_command_is_not_empty
@@ -134,3 +158,4 @@ test_empty_content_is_empty
 test_idle_placeholder_is_empty
 test_idle_placeholder_case_mode_is_explicit
 test_real_text_is_pending
+test_nbsp_padded_rows_normalize
