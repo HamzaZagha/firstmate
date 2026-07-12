@@ -14,6 +14,10 @@
 #   4. The --key path never carries the marker.
 #   5. The marker is exactly the label "[fm-from-firstmate]" + ASCII 0x1f, and the
 #      fm_message_from_firstmate detector keys on that untypable sequence.
+#   6. A submitted text steer to a task selector clears the watcher's
+#      .hb-surfaced-<task> marker (so the finished-status stale dedup never
+#      absorbs a steered crew that later hard-stops); the --key path and an
+#      explicit session:window target leave the marker untouched.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -189,9 +193,42 @@ test_marker_is_label_plus_unit_separator() {
   pass "fm-send: the marker is exactly '[fm-from-firstmate]' + ASCII 0x1f, detector keys on it"
 }
 
+# A text steer to a task selector supersedes whatever surfaced status the crew
+# was idling at, so fm-send must clear the watcher's .hb-surfaced-<task> marker
+# on a confirmed submit; otherwise a steered done: crew that later hard-stops
+# without a new status line would be absorbed by fm-watch.sh's finished-status
+# stale dedup. Scoped to selectors: --key sends and explicit session:window
+# targets (no task to clear) leave the marker alone.
+test_text_steer_clears_surfaced_marker() {
+  local dir fb log home rc marker
+  dir="$TMP_ROOT/surfaced"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); log="$dir/send.log"
+  home=$(setup_home surfaced)
+  fm_write_meta "$home/state/build.meta" \
+    "window=sess:fm-build" "worktree=$home/wt" "project=$home/p" \
+    "harness=echo" "kind=ship" "mode=no-mistakes" "yolo=off"
+  marker="$home/state/.hb-surfaced-build"
+  printf 'done: PR https://example.test/pr/7' > "$marker"
+  run_send "$fb" "$home" "$log" "fm-build" --key Escape; rc=$?
+  expect_code 0 "$rc" "--key send should succeed"
+  [ -e "$marker" ] || fail "--key send cleared the surfaced marker but must not"
+  printf 'done: PR https://example.test/pr/7' > "$marker"
+  run_send "$fb" "$home" "$log" "fm-build" "also add tests for that"; rc=$?
+  expect_code 0 "$rc" "text steer to a task selector should succeed"
+  [ ! -e "$marker" ] || fail "text steer did not clear the surfaced marker (a steered crew that hard-stops would be deduped invisible)"
+  # An explicit session:window target has no task to clear; a same-named marker
+  # must survive (the escape hatch stays hands-off, like the from-firstmate mark).
+  printf 'done: PR https://example.test/pr/7' > "$marker"
+  run_send "$fb" "$home" "$log" "sess:fm-build" "ping"; rc=$?
+  expect_code 0 "$rc" "explicit window send should succeed"
+  [ -e "$marker" ] || fail "explicit session:window send cleared the surfaced marker but must not"
+  pass "fm-send: a submitted text steer to a task selector clears .hb-surfaced-<task>; --key and explicit targets do not"
+}
+
 test_secondmate_target_is_marked
 test_exact_secondmate_task_id_is_marked
 test_crewmate_target_is_not_marked
 test_explicit_window_is_not_marked
 test_key_path_is_not_marked
 test_marker_is_label_plus_unit_separator
+test_text_steer_clears_surfaced_marker
